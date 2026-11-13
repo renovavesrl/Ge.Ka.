@@ -3872,12 +3872,14 @@ async function toggleDelProt() {
   if (c.enabled && c.hash) {
     // disattivazione: serve la password
     if (!await verifyDelPassword(c, 'Disattiva protezione', 'Inserisci la password per disattivare la protezione.')) return;
-    if (!await pushDelProt({ ...c, enabled:false })) return;
-    showSaveIndicator('protezione eliminazione disattivata');
+    // si disattiva e la password viene rimossa: per riattivare ne servirà una nuova
+    if (!await pushDelProt({ enabled:false, salt:'', hash:'' })) return;
+    showSaveIndicator('protezione eliminazione disattivata · password rimossa');
   } else {
     // attivazione: se non c'è ancora una password va impostata
-    let n = { salt:c.salt, hash:c.hash };
-    if (!c.hash) { n = await askNewDelPassword('Attiva protezione'); if (!n) return; }
+    // l'attivazione richiede sempre una nuova password
+    const n = await askNewDelPassword('Attiva protezione');
+    if (!n) return;
     if (!await pushDelProt({ enabled:true, salt:n.salt, hash:n.hash })) return;
     showSaveIndicator('✓ protezione eliminazione attiva');
   }
