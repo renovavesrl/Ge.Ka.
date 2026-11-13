@@ -1338,7 +1338,7 @@
 <!-- IMPOSTAZIONI -->
 <div class="tab-panel" id="tab-settings">
   <div class="section-title">Impostazioni</div>
-  <div class="section-subtitle">PROFILO, ASPETTO, COLLEGAMENTI E GUIDA</div>
+  <div class="section-subtitle">PROFILO, ASPETTO, COLLEGAMENTI, SICUREZZA, RICHIESTE E GUIDA</div>
   <div class="grid-2">
     <div class="card">
       <div class="card-label">Profilo</div>
@@ -1360,6 +1360,21 @@
     <div class="card">
       <div class="card-label">Dropbox · foto, piante e allegati</div>
       <div class="ui-set-row"><p>Stato: <b id="dbx-nav-label">Dropbox</b><br><span class="vb-muted">Foto, piante, documenti e allegati nel Dropbox dello studio.</span></p><button class="btn-outline" onclick="dbxConfig()">Configura Dropbox</button></div>
+    </div>
+    <div class="card">
+      <div class="card-label">Sicurezza · eliminazione progetti</div>
+      <div id="delprot-box"></div>
+    </div>
+    <div class="card">
+      <div class="card-label">Richieste</div>
+      <div class="ui-set-row"><p>Segnala un problema o proponi una novità per il gestionale.<br><span class="vb-muted">Si apre la pagina delle richieste su Notion.</span></p>
+        <a class="btn-outline" href="https://developing-lantana-da8.notion.site/41724bdee1c5801e98d2d0edb333a3d7?pvs=105" target="_blank" rel="noopener noreferrer" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;">Apri le richieste
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></a></div>
+    </div>
+    <div class="card full-width">
+      <div class="card-label">Elimina progetti</div>
+      <div class="ui-set-row" style="margin-bottom:10px;"><p>Rimuove definitivamente un progetto dal Gist. Se la password è attiva, ti verrà chiesta.</p><button class="btn-outline" onclick="uiRenderDelList(true)">Aggiorna elenco</button></div>
+      <div id="ui-del-list"></div>
     </div>
     <div class="card full-width">
       <div class="card-label">Promemoria</div>
@@ -3680,8 +3695,6 @@ function showGistConfig() {
           onfocus="this.style.borderColor='#666'" onblur="this.style.borderColor='#e3e2df'">
       </div>
 
-      <div id="delprot-box" style="margin-bottom:24px;padding:14px 16px;border:1px solid var(--border);border-radius:10px;">${delProtInner()}</div>
-
       <div style="display:flex;gap:10px;justify-content:flex-end;">
         <button class="btn-outline" onclick="document.getElementById('gist-config-overlay').remove()">Annulla</button>
         <button class="btn" onclick="saveGistConfig()">Salva configurazione</button>
@@ -3689,7 +3702,6 @@ function showGistConfig() {
     </div>`;
   document.body.appendChild(overlay);
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-  refreshDelProtFromGist();
 }
 
 function saveGistConfig() {
@@ -4163,23 +4175,47 @@ async function deleteProject(key, nome) {
   }
   if (!confirm(`Eliminare definitivamente il progetto "${nome}"?\nQuesta azione non può essere annullata.`)) return;
   const token = getGithubToken();
-  const gistId = getGistId();
-  if (!token || !gistId) return;
-
-  const filename = `${key}.json`;
+  if (!token) { alert('Collega GitHub dalle Impostazioni per eliminare i progetti.'); return; }
   try {
-    await fetch(`https://api.github.com/gists/${gistId}`, {
+    const gistId = await resolveGistId(token);
+    const resp = await fetch(`https://api.github.com/gists/${gistId}`, {
       method: 'PATCH',
       headers: { 'Authorization': `token ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ files: { [filename]: null } }) // null = elimina il file dal Gist
+      body: JSON.stringify({ files: { [`${key}.json`]: null } }) // null = elimina il file dal Gist
     });
-    document.querySelector(`[data-key="${key}"]`)?.remove();
-    if (document.querySelectorAll('.picker-row').length === 0) {
-      document.getElementById('picker-list').innerHTML = `<div style="text-align:center;padding:24px;color:var(--text-dimmer);font-size:13px;">Nessun progetto trovato nel Gist.</div>`;
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    // se è aperto proprio quel progetto lo si chiude, così non viene risalvato
+    if (typeof UI !== 'undefined') {
+      if (UI.loaded === key) {
+        try { if (VB) vbChiudi(true); } catch (e) {}
+        UI.loaded = null; uiResetProject();
+        const c = document.getElementById('codice_progetto'); if (c) c.value = '';
+      }
+      if (UI.projects) UI.projects = UI.projects.filter(p => p.key !== key);
+      try { uiRenderSideList(); uiInboxBadge(); } catch (e) {}
     }
+    document.querySelector(`.picker-row[data-key="${key}"]`)?.remove();
+    try { uiRenderDelList(); } catch (e) {}
+    showSaveIndicator('✓ progetto eliminato');
   } catch(e) {
     alert('Errore durante l\'eliminazione.');
   }
+}
+
+// Elenco dei progetti eliminabili (sezione Impostazioni)
+async function uiRenderDelList(force) {
+  const el = document.getElementById('ui-del-list'); if (!el) return;
+  if (!getGithubToken()) { el.innerHTML = '<div class="vb-muted">Collega GitHub per vedere e gestire i progetti.</div>'; return; }
+  if (!UI.projects || force) {
+    el.innerHTML = '<div class="vb-muted">Carico i progetti…</div>';
+    try { await uiLoadProjects(true); uiLocalSummary(); uiRenderSideList(); }
+    catch (e) { el.innerHTML = '<div class="vb-muted">Non riesco a leggere i progetti da GitHub: controlla connessione e token.</div>'; return; }
+  }
+  const list = (UI.projects || []).slice().sort((a, b) => String(a.codice).localeCompare(String(b.codice), 'it', { numeric: true }));
+  el.innerHTML = list.length ? list.map(p => `<div class="ui-set-row" style="padding:8px 0;border-top:1px solid var(--border);">
+      <p style="flex:1 1 200px;"><b>${uiEsc(p.codice)}</b> · ${uiEsc(p.nome)}${UI.loaded === p.key ? ' <span class="vb-muted">(aperto)</span>' : ''}<br><span class="vb-muted">Ultimo salvataggio: ${p.savedAt ? uiEsc(uiDate(p.savedAt)) : '—'}</span></p>
+      <button class="btn-sm danger" data-k="${uiEsc(p.key)}" data-n="${uiEsc(p.nome)}" onclick="deleteProject(this.dataset.k, this.dataset.n)">Elimina</button>
+    </div>`).join('') : '<div class="vb-muted">Nessun progetto salvato.</div>';
 }
 
 function newProject() {
@@ -9326,6 +9362,7 @@ function uiRenderSettings() {
   const g = document.getElementById('ui-gh-status');
   if (g) g.innerHTML = getGithubToken() ? 'Stato: <b>collegato ✓</b><br><span class="vb-muted">I progetti si salvano sul tuo GitHub Gist.</span>' : 'Stato: <b>non collegato</b><br><span class="vb-muted">Senza GitHub i progetti non vengono salvati.</span>';
   try { dbxUpdBtn(); } catch (e) {}
+  refreshDelProt(); refreshDelProtFromGist(); uiRenderDelList();
   const T = uiThr(); [['ui-thr-sop', T.sop], ['ui-thr-prob', T.prob], ['ui-thr-verb', T.verb]].forEach(([id, v]) => { const e = document.getElementById(id); if (e && document.activeElement !== e) e.value = v; });
 }
 function uiSetUser(v) { uiSet('gk_user', String(v || '').trim()); }
